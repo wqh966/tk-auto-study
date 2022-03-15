@@ -1,4 +1,4 @@
-# 青年大学习/团课自动打卡
+# 青年大学习/团课自动打卡 
 
 ![](https://github.com/838239178/tk-auto-study/workflows/auto-study/badge.svg) ![](https://img.shields.io/github/stars/838239178/tk-auto-study) ![](https://img.shields.io/github/forks/838239178/tk-auto-study) ![](https://img.shields.io/badge/Python-3.7+-green.svg)
 
