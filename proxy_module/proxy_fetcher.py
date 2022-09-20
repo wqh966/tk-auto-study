@@ -16,7 +16,7 @@ class ProxyFecher(object):
     def random_pop(self) -> str:
         if self.cache_hosts.__len__() == 0:
             self.fetch_new_hosts()
-        idx = random.randint(0, len(self.cache_hosts))
+        idx = random.randint(0, len(self.cache_hosts) - 1)
         return self.cache_hosts.pop(idx)
 
     def empty(self) -> bool:
@@ -36,7 +36,7 @@ class ProxyFecher(object):
             except Exception:
                 logging.warning("正在查找可用IP代理...")
                 self.fetched += 1
-        if(self.cache_hosts.__len__() == 0):
+        if len(self.cache_hosts) == 0:
             raise KnownException("无可用代理IP")
         else:
             self.fetched += 1

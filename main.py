@@ -1,35 +1,15 @@
-import base64
-import importlib
 import json
 import logging
 import os
 import time
-import ssl
 from functools import wraps
-
-import requests
-
+from util import is_set
+from api_module import main_api as api
 from exception import KnownException, SendInitException
-from proxy_module.proxy_fetcher import ProxyFecher
+from ocr_module import util as ocrutil
+from send_module import util as sendutil
 
-crypt_name = "sm4"
-crypt_mode = "ecb"
-
-sess = requests.session()
-sess.verify = False
-sess.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36",
-    "Host": "m.fjcyl.com",
-    "Referer": "https://m.fjcyl.com/login"
-})
-
-ocr_util = None
-encryptor = importlib.import_module(
-    f"crypt_module.{crypt_name}.{crypt_name}_{crypt_mode}")
-send_util = {
-    'enable': False,
-    'mode': 'fail',
-}
+THIS_PATH = os.path.dirname(__file__)
 
 
 def catch_exception(func):
@@ -38,13 +18,12 @@ def catch_exception(func):
         try:
             return func(*args, **kwargs)
         except SendInitException as se:
-            send_util['enable'] = False
+            sendutil.enabled(False)
             error_exit(f'{se}', False)
         except KnownException as ke:
             error_exit(f'{ke}', False)
         except BaseException as e:
             error_exit(f"请阅读异常提醒，如果无法解决请截图日志发issue)：{e}")
-
     return catch
 
 
@@ -54,7 +33,7 @@ def init_logger():
 
 
 def error_exit(msg: str, trace=True):
-    send_msg(content=msg, success=False)
+    sendutil.send_msg(content=msg, success=False)
     if trace:
         logging.exception(f"异常信息: {msg}")
     else:
@@ -62,67 +41,21 @@ def error_exit(msg: str, trace=True):
     exit(-1)
 
 
-def error_raise(msg: str):
-    raise KnownException(msg)
-
-
-# def get_validate_code() -> str:
-#     max_try = 5
-#     has_try = 0
-#     while has_try < max_try:
-#         resp = sess.get(
-#             url="https://m.fjcyl.com/validateCode?0.123123&width=58&height=19&num=4")
-#         try:
-#             # noinspection PyUnresolvedReferences
-#             res = ocr_util.get_result(base64.b64encode(resp.content))
-#             logging.info('获取验证码成功')
-#             return res
-#         except Exception as e:
-#             logging.warning(f'获取验证码失败，原因:{e}')
-#             logging.warning(f'正在重试, 次数:{has_try}')
-#             has_try += 1
-#             time.sleep(1)
-
-#     if has_try == max_try:
-#         error_raise("验证码解析失败,请尝试更换方式或发issue寻求帮助")
-
-
-def post_study_record():
-    resp = sess.post(url="https://m.fjcyl.com/studyRecord")
-    if resp.json().get('success'):
-        logging.info("学习成功！")
-    else:
-        error_raise("学习失败")
-
-
-def post_login(username: str, pwd: str, pub_key):
-    post_dict = {
-        'userName': encryptor.encrypt(username, pub_key),
-        'pwd': encryptor.encrypt(pwd, pub_key),
-        # 'validateCode': validate_code
-    }
-
-    resp = sess.post(url="https://m.fjcyl.com/mobileNologin",
-                     data=post_dict)
-
-    if resp.status_code == requests.codes.ok:
-        if resp.json().get('success'):
-            logging.info(username[-4:] + ' login ' + resp.json().get('errmsg'))
-        else:
-            raise ConnectionError(resp.json().get('errmsg'))
-    else:
-        error_exit(f'官方服务器发生异常,错误代码:{resp.status_code},信息:{resp.text}')
-
-
 def get_profile_from_config():
-    with open('config.json', 'r', encoding='utf-8') as config:
+    with open(os.path.join(THIS_PATH, 'config.json'), 'r', encoding='utf-8') as config:
         config_json = json.loads(config.read())
         username = config_json.get('username')
         pwd = config_json.get('pwd')
         pub_key = config_json.get('rsaKey').get('public')
+        
+        api.max_retry = config_json.get('maxRetry')
+        api.max_retry = api.max_retry if is_set(api.max_retry) else 5
+        logging.info("set max retry %d", api.max_retry)
+
         api_key = config_json.get('ocr').get('ak')
         secret_key = config_json.get('ocr').get('sk')
         ocr_type = config_json.get('ocr').get('type')
+
         send_config = config_json.get('send')
         accounts = config_json.get("extUsers")
         if send_config is not None:
@@ -130,25 +63,30 @@ def get_profile_from_config():
             send_key = send_config.get('key')
             send_mode = send_config.get('mode')
     return username, pwd, pub_key, \
-        api_key, secret_key, ocr_type, \
-        send_type, send_key, send_mode, accounts
+        send_type, send_key, send_mode, accounts, api_key, secret_key, ocr_type
 
 
 def get_profile_from_env():
     username = os.environ['username']
     pwd = os.environ['password']
     pub_key = os.environ['pubKey']
-    api_key = os.environ['ocrKey']
-    secret_key = os.environ['ocrSecret']
-    ocr_type = os.environ['ocrType']
     send_type = os.environ['sendType']
     send_key = os.environ['sendKey']
     send_mode = os.environ['sendMode']
     ext_users = os.environ['extUsers']
     accounts = []
-    if ext_users is not None and ext_users.__len__() > 1:
-        for userLine in ext_users.split('\n'):
-            usr_split = userLine.split(" ")
+    
+    api.max_retry = os.environ['maxRetry']
+    api.max_retry = api.max_retry if is_set(api.max_retry) else 5
+    logging.info("set max retry %d", api.max_retry)
+
+    api_key = os.environ['ocrKey']
+    secret_key = os.environ['ocrSecret']
+    ocr_type = os.environ['ocrType']
+
+    if ext_users is not None and len(ext_users) > 1:
+        for user_line in ext_users.split('\n'):
+            usr_split = user_line.split(" ")
             account = {
                 "username": None,
                 "pwd": None
@@ -159,78 +97,26 @@ def get_profile_from_env():
                 account['pwd'] = usr_split[1]
             accounts.append(account)
     return username, pwd, pub_key, \
-        api_key, secret_key, ocr_type, \
-        send_type, send_key, send_mode, accounts
+        send_type, send_key, send_mode, accounts, api_key, secret_key, ocr_type
 
 
 def login(username, pwd, pub_key):
-    max_try = 5
     has_try = 0
     logging.info(f"正在登录尾号{username[-4:]}")
-    while has_try < max_try:
-        # get validate code 经测试不需要验证码
-        # code = get_validate_code()
+    while has_try < api.max_retry:    
+        code = api.get_validate_code()
         # do login
         try:
-            post_login(username, pwd, pub_key)
+            api.post_login(username, pwd, pub_key, code)
             break
-        except ConnectionError as e:
+        except Exception as e:
             logging.error(f'尾号{username[-4:]}登录失败，原因:{e}')
             logging.info(f'尝试重新登录，重试次数{has_try}')
             has_try += 1
             time.sleep(1)
 
-    if has_try == max_try:
-        error_raise(f"尾号{username[-4:]}尝试登录失败")
-
-
-# def init_ocr(ocr_type: str, ak: str, sk: str):
-#     global ocr_util
-#     if ocr_type is None or ocr_type == '':
-#         ocr_type = "baidu_image"
-
-#     try:
-#         ocr_util = importlib.import_module(
-#             f"ocr_module.{ocr_type}.{ocr_type}_ocr")
-#     except ModuleNotFoundError:
-#         error_exit("ocr类型不存在,请更换类型")
-
-#     if ocr_util.is_need_keys():
-#         ocr_util.set_keys(ak, sk)
-#     logging.info(f"使用 OCR {ocr_type}")
-
-
-def init_sender(send_type, send_key, send_mode):
-    if send_type is None or send_type == '':
-        return
-    if send_key is None or send_key == '':
-        raise SendInitException('缺少配置信息: send_key')
-    else:
-        try:
-            send_util['sender'] = importlib.import_module(
-                f"send_module.{send_type}.sender")
-        except ModuleNotFoundError:
-            raise SendInitException("消息推送类型不存在，请更换类型")
-
-        send_util['enable'] = True
-        send_util['sender'].set_key(send_key)
-        if send_mode is not None and send_mode != "":
-            send_util['mode'] = send_mode
-
-
-def send_msg(content, success=True):
-    if not send_util['enable']:
-        return
-    if send_util['mode'] == 'both' \
-            or (send_util['mode'] == 'fail' and not success) \
-            or (send_util['mode'] == 'success' and success):
-        res = send_util['sender'].send(title="青年大学习打卡",
-                                       content=f"**状态：** {'成功' if success else '失败'}\n\n"
-                                               f"**信息：** {content}")
-        if not res['success']:
-            logging.warning(f"消息推送失败，原因：{res['message']}")
-        else:
-            logging.info(f"消息推送成功")
+    if has_try == api.max_retry:
+        raise KnownException(f"尾号{username[-4:]}尝试登录失败")
 
 
 def multi_study(accounts, pub_key):
@@ -238,19 +124,18 @@ def multi_study(accounts, pub_key):
     push_msg = ""
     all_success = True
     for account in accounts:
-        if account['username'] is None or account['pwd'] is None:
+        if not is_set(account['username']) or not is_set(account['pwd']):
             logging.warning("多人打卡配置存在错误,将跳过部分用户,请检查配置的用户名密码格式")
             continue
-
         try:
             login(account['username'], account['pwd'], pub_key)
-            post_study_record()
+            api.post_study_record()
             push_msg += f"尾号{account['username'][-4:]}打卡成功\n"
         except KnownException as e:
             push_msg += f"尾号{account['username'][-4:]}失败:{e}\n"
             all_success = False
     push_msg += "全部打卡成功" if all_success else "部分打卡失败"
-    send_msg(push_msg, all_success)
+    sendutil.send_msg(push_msg, all_success)
 
 
 def single_study(username, password, pub_key):
@@ -258,63 +143,51 @@ def single_study(username, password, pub_key):
     # do login
     login(username, password, pub_key)
     # do study
-    post_study_record()
+    api.post_study_record()
     # send success message
-    send_msg("打卡成功")
+    sendutil.send_msg("打卡成功")
 
 
 @catch_exception
-def run(use_config: bool):
+def run(use_config: bool, use_proxy: bool = False):
     logging.info("自动学习开始")
     # get default config
     username, pwd, pub_key, \
-        api_key, secret_key, ocr_type, \
         send_type, send_key, send_mode, \
-        accounts = get_profile_from_config() if use_config else get_profile_from_env()
-    # init ocr module 不需要 ocr 了
-    # init_ocr(ocr_type, api_key, secret_key)
+        accounts, \
+        api_key, secret_key, ocr_type = get_profile_from_config() if use_config else get_profile_from_env()
     # init sender
-    init_sender(send_type, send_key, send_mode)
+    sendutil.init_sender(send_type, send_key, send_mode)
+    # init ocr
+    ocrutil.init_ocr(ocr_type, api_key, secret_key)
+    # init proxy
+    api.init_proxy() if use_proxy else 0
     # study proc
-    if accounts is not None and len(accounts) > 0:
-        if pwd is not None and username is not None and pwd != "" and username != "":
+    if is_set(accounts):
+        if is_set(username) and is_set(pwd):
             accounts.append({"username": username, "pwd": pwd})
         multi_study(accounts, pub_key)
     else:
         single_study(username, pwd, pub_key)
 
 
-def init_proxy():
-    logging.info("正在尝试使用代理IP")
-    proxy = ProxyFecher()
-    while not proxy.empty():
-        ip = proxy.random_pop()
-        sess.proxies = {'https': f"http://{ip}"}
-        try:
-            try:
-                logging.info(f"正在测试 http://{ip}")
-                sess.get("https://m.fjcyl.com")
-            except BaseException:
-                logging.info(f"正在测试 https://{ip}")
-                sess.proxies = {'https': f"https://{ip}"}
-                sess.get("https://m.fjcyl.com")
-
-            logging.info(f"测试成功，使用{ip}代理请求")
-            return
-        except BaseException:
-            logging.info(f"{ip} 不可用")
-    error_exit("找不到可用代理IP", False)
+def start_with_docker():
+    init_logger()
+    logging.info("你正在使用docker运行,请确保环境变量存在")
+    run(False, False)
 
 
 def start_with_workflow():
     init_logger()
     logging.info("你正在使用GitHubAction,请确保secret已经配置")
-    init_proxy()
-    run(False)
+    run(False, True)
+
+
+def start_local():
+    init_logger()
+    logging.info("你正在使用本地服务,请确保填写了配置文件")
+    run(True, False)
 
 
 if __name__ == '__main__':
-    init_logger()
-    logging.info("你正在使用本地服务,请确保填写了配置文件")
-    init_proxy()
-    run(True)
+    start_local()
